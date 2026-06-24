@@ -27,6 +27,75 @@ HIDE_STREAMLIT_TOOLBAR_CSS = """
 </style>
 """
 
+LANDING_DETAIL_CSS = """
+<style>
+    .landing-detail-grid {
+        display: grid !important;
+        grid-template-columns: repeat(2, minmax(0, 1fr)) !important;
+        gap: 1rem !important;
+        align-items: stretch !important;
+        width: 100% !important;
+        margin-bottom: 20px !important;
+    }
+    .landing-detail-col {
+        display: flex !important;
+        flex-direction: column !important;
+        height: 100% !important;
+    }
+    .landing-detail-heading {
+        margin-top: 1.5rem !important;
+        margin-bottom: 1rem !important;
+        font-size: 1.25rem !important;
+        font-weight: 600 !important;
+        color: var(--white) !important;
+        line-height: 1.3 !important;
+    }
+    .landing-detail-card {
+        flex: 1 1 auto !important;
+        display: flex !important;
+        flex-direction: column !important;
+        margin-bottom: 0 !important;
+        box-sizing: border-box !important;
+    }
+    .landing-detail-card .tech-table {
+        flex: 1 1 auto !important;
+        height: 100% !important;
+    }
+    .landing-detail-card .tech-table tr {
+        height: calc(100% / 6) !important;
+    }
+    .landing-detail-card .workflow-table tr {
+        height: calc(100% / 5) !important;
+    }
+    .landing-detail-card .tech-table td {
+        vertical-align: top !important;
+    }
+    .landing-detail-card .tech-table.workflow-table td.workflow-key,
+    .landing-detail-card .tech-table.workflow-table .workflow-key-label {
+        font-family: var(--font-mono) !important;
+        font-size: 0.7rem !important;
+        font-weight: 700 !important;
+        color: #F44174 !important;
+        letter-spacing: 0.08em !important;
+    }
+    .landing-detail-card .tech-table.workflow-table td.workflow-key {
+        width: 35% !important;
+    }
+    .tech-table.workflow-table code {
+        color: #F44174 !important;
+        background-color: rgba(244, 65, 116, 0.12) !important;
+        border: 1px solid rgba(244, 65, 116, 0.25) !important;
+        border-radius: 4px !important;
+        padding: 0.1em 0.35em !important;
+    }
+    @media (max-width: 768px) {
+        .landing-detail-grid {
+            grid-template-columns: 1fr !important;
+        }
+    }
+</style>
+"""
+
 def inject_styles(*, hide_sidebar: bool = False):
     st.markdown("""
 <!-- Film Grain Overlay -->
@@ -524,7 +593,7 @@ def inject_styles(*, hide_sidebar: bool = False):
     div[data-testid="stAlert"] [role="img"] {
         filter: grayscale(1) brightness(1.5) !important;
     }
-    
+
     /* Technical Stack Table Override */
     .tech-table {
         width: 100% !important;
@@ -552,6 +621,24 @@ def inject_styles(*, hide_sidebar: bool = False):
         letter-spacing: 0.08em !important;
         width: 35% !important;
     }
+    .landing-detail-card .tech-table.workflow-table td.workflow-key,
+    .landing-detail-card .tech-table.workflow-table .workflow-key-label {
+        font-family: var(--font-mono) !important;
+        font-size: 0.7rem !important;
+        font-weight: 700 !important;
+        color: #F44174 !important;
+        letter-spacing: 0.08em !important;
+    }
+    .landing-detail-card .tech-table.workflow-table td.workflow-key {
+        width: 35% !important;
+    }
+    .tech-table.workflow-table code {
+        color: #F44174 !important;
+        background-color: rgba(244, 65, 116, 0.12) !important;
+        border: 1px solid rgba(244, 65, 116, 0.25) !important;
+        border-radius: 4px !important;
+        padding: 0.1em 0.35em !important;
+    }
     .tech-table tr:hover td {
         background-color: transparent !important;
     }
@@ -561,3 +648,4 @@ def inject_styles(*, hide_sidebar: bool = False):
     st.markdown(HIDE_STREAMLIT_TOOLBAR_CSS, unsafe_allow_html=True)
     if hide_sidebar:
         st.markdown(HIDE_LANDING_SIDEBAR_CSS, unsafe_allow_html=True)
+        st.markdown(LANDING_DETAIL_CSS, unsafe_allow_html=True)
