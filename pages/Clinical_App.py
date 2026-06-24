@@ -55,7 +55,7 @@ with tab_qa:
         "What is the recommended dosage and duration for the isoniazid and rifapentine regimen?"
     ]
     
-    use_preset = st.toggle("Use Sample Question", value=False)
+    use_preset = st.toggle("Use Sample Question", value=True)
     
     if use_preset:
         query_text = st.selectbox("Sample Clinical Inquiries", presets)
