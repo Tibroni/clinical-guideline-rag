@@ -1,0 +1,35 @@
+# Environments
+.env
+.venv/
+env/
+venv/
+ENV/
+
+# Python cache
+__pycache__/
+*.py[cod]
+*$py.class
+
+# IDE files
+.vscode/
+.idea/
+*.suo
+*.ntvs*
+*.njsproj
+*.sln
+*.swp
+
+# Testing
+.pytest_cache/
+.coverage
+htmlcov/
+tests/data/
+
+# App temporary data
+data/
+*.pdf
+*.db
+
+# Streamlit config
+.streamlit/
+!.streamlit/config.toml
