@@ -27,22 +27,16 @@ _warmup_started = False
 
 
 def _get_initial_config_value(key):
-    try:
-        if key in st.secrets:
-            return st.secrets[key]
-    except Exception:
-        pass
-    val = os.environ.get(key)
-    if val is not None:
-        return val
-    return DEFAULTS.get(key, "")
+    return AppConfig._get_host_setting(key, DEFAULTS.get(key, ""))
 
 
 def init_session_config():
+    """Load config from Streamlit secrets / env. Re-fills empty session values on each run."""
     for key in CONFIG_KEYS:
-        if key not in st.session_state:
-            st.session_state[key] = _get_initial_config_value(key)
-    if not st.session_state["LLM_PROVIDER"]:
+        host_val = _get_initial_config_value(key)
+        if key not in st.session_state or not str(st.session_state.get(key, "")).strip():
+            st.session_state[key] = host_val
+    if not st.session_state.get("LLM_PROVIDER"):
         st.session_state["LLM_PROVIDER"] = "gemini"
 
 
@@ -77,8 +71,8 @@ def _rows_to_indexed_docs(rows):
 def _fetch_snowflake_data_sync():
     """Blocking Snowflake fetch — only for background warm-up or post-ingest refresh."""
     global _sf_status, _indexed_docs
-    account = st.session_state.get("SNOWFLAKE_ACCOUNT", "") or os.environ.get("SNOWFLAKE_ACCOUNT", "")
-    user = st.session_state.get("SNOWFLAKE_USER", "") or os.environ.get("SNOWFLAKE_USER", "")
+    account = AppConfig.get_setting("SNOWFLAKE_ACCOUNT")
+    user = AppConfig.get_setting("SNOWFLAKE_USER")
     if not account or not user:
         status = ("unconfigured", 0, False)
         docs = []
