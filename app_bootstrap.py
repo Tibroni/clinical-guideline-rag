@@ -139,7 +139,7 @@ def _fetch_snowflake_data_from_creds(creds: dict):
 def _warmup_worker(creds: dict):
     global _resources, _sf_status, _indexed_docs
     try:
-        resources = IngestionPipeline(), RAGPipeline(), SnowflakeVectorStore()
+        resources = IngestionPipeline(), SnowflakeVectorStore()
         status, docs = _fetch_snowflake_data_from_creds(creds)
         with _lock:
             _resources = resources
@@ -148,7 +148,7 @@ def _warmup_worker(creds: dict):
     except Exception:
         with _lock:
             if _resources is None:
-                _resources = (IngestionPipeline(), RAGPipeline(), SnowflakeVectorStore())
+                _resources = (IngestionPipeline(), SnowflakeVectorStore())
             if _sf_status is None:
                 _sf_status = ("offline", 0, False)
             if _indexed_docs is None:
@@ -168,15 +168,19 @@ def start_background_warmup():
 
 
 def get_app_resources():
+    """Return app singletons. RAGPipeline is always fresh so code hot-reloads apply."""
     global _resources
     with _lock:
         if _resources is not None:
-            return _resources
-    resources = IngestionPipeline(), RAGPipeline(), SnowflakeVectorStore()
+            ingest_pipeline, store = _resources
+            return ingest_pipeline, RAGPipeline(), store
+    ingest_pipeline = IngestionPipeline()
+    store = SnowflakeVectorStore()
     with _lock:
         if _resources is None:
-            _resources = resources
-        return _resources
+            _resources = (ingest_pipeline, store)
+        ingest_pipeline, store = _resources
+    return ingest_pipeline, RAGPipeline(), store
 
 
 def get_snowflake_status_cached():

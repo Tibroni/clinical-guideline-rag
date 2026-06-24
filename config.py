@@ -168,28 +168,39 @@ class AppConfig:
     @classmethod
     def generate_completion(cls, system_prompt: str, user_prompt: str) -> str:
         """Generates a text completion using the active provider."""
+        return "".join(cls.generate_completion_stream(system_prompt, user_prompt))
+
+    @classmethod
+    def generate_completion_stream(cls, system_prompt: str, user_prompt: str):
+        """Yields text completion chunks using the active provider."""
         provider = cls.get_llm_provider()
         if provider == "openai":
             client = cls.get_openai_client()
-            response = client.chat.completions.create(
+            stream = client.chat.completions.create(
                 model="gpt-4o-mini",
                 messages=[
                     {"role": "system", "content": system_prompt},
-                    {"role": "user", "content": user_prompt}
+                    {"role": "user", "content": user_prompt},
                 ],
-                temperature=0.2
+                temperature=0.2,
+                stream=True,
             )
-            return response.choices[0].message.content
+            for chunk in stream:
+                delta = chunk.choices[0].delta.content
+                if delta:
+                    yield delta
         else:
             client = cls.get_gemini_client()
             from google.genai import types
+
             config = types.GenerateContentConfig(
                 system_instruction=system_prompt,
-                temperature=0.2
+                temperature=0.2,
             )
-            response = client.models.generate_content(
+            for chunk in client.models.generate_content_stream(
                 model="gemini-2.5-flash",
                 contents=user_prompt,
-                config=config
-            )
-            return response.text
+                config=config,
+            ):
+                if chunk.text:
+                    yield chunk.text

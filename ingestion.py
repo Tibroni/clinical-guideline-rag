@@ -4,18 +4,7 @@ import io
 from pypdf import PdfReader
 from config import AppConfig
 from vector_store import SnowflakeVectorStore
-
-# Default guideline URLs
-DEFAULT_GUIDELINES = {
-    "CDC Opioid Prescribing Guideline (2022)": {
-        "url": "https://www.cdc.gov/mmwr/volumes/71/rr/pdfs/rr7103a1-H.pdf",
-        "filename": "cdc_opioids_2022.pdf"
-    },
-    "CDC Latent Tuberculosis Treatment Guideline (2020)": {
-        "url": "https://www.cdc.gov/mmwr/volumes/69/rr/pdfs/rr6901a1-H.pdf",
-        "filename": "cdc_tb_2020.pdf"
-    }
-}
+from guidelines_catalog import DEFAULT_GUIDELINES
 
 class IngestionPipeline:
     def __init__(self):
@@ -48,6 +37,11 @@ class IngestionPipeline:
             f.write(response.content)
             
         return dest_path
+
+    def ingest_default_guideline(self, doc_name: str, progress_callback=None) -> int:
+        """Download and index a catalog guideline by its display title."""
+        pdf_path = self.download_default_pdf(doc_name)
+        return self.process_and_index_pdf(pdf_path, doc_name, progress_callback)
 
     @staticmethod
     def chunk_page_text(text: str, chunk_size: int = 1000, chunk_overlap: int = 200) -> list[str]:

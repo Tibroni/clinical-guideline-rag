@@ -1,9 +1,10 @@
+import html
 import re
 import streamlit as st
 import pandas as pd
 from config import AppConfig
 from vector_store import SnowflakeVectorStore
-from ingestion import DEFAULT_GUIDELINES
+from guidelines_catalog import GUIDELINES_CATALOG, GUIDELINES_PAGE_SIZE
 from ui_styles import inject_styles
 from app_bootstrap import (
     init_session_config,
@@ -35,22 +36,100 @@ start_background_warmup()
 # Reuse resources pre-warmed on the landing page
 ingest_pipeline, rag_pipeline, store = get_app_resources()
 
+
+@st.dialog("Indexing guideline", width="medium", dismissible=False)
+def ingest_guideline_dialog(title: str) -> None:
+    st.caption("Embedding document chunks into the Snowflake vector index.")
+    st.markdown(f"**{html.escape(title)}**", unsafe_allow_html=True)
+    progress_bar = st.progress(0.0)
+    status_text = st.empty()
+    try:
+
+        def ingest_progress(current, total, msg):
+            progress_bar.progress(current / total if total else 0.0)
+            status_text.text(msg)
+
+        chunk_count = ingest_pipeline.ingest_default_guideline(
+            title,
+            progress_callback=ingest_progress,
+        )
+        progress_bar.progress(1.0)
+        status_text.success(f"Indexed — {chunk_count} chunks loaded.")
+        refresh_snowflake_data()
+        st.rerun()
+    except Exception as e:
+        status_text.error(f"Ingestion failed: {e}")
+        if st.button("Close", key="ingest_dialog_close"):
+            st.rerun()
+
+
+@st.dialog("Indexing guidelines", width="medium", dismissible=False)
+def ingest_page_dialog(guideline_titles: list[str]) -> None:
+    st.caption("Batch embedding all guidelines on this page.")
+    progress_bar = st.progress(0.0)
+    status_text = st.empty()
+    total_chunks = 0
+    try:
+        for idx, title in enumerate(guideline_titles):
+            status_text.text(f"Processing {idx + 1}/{len(guideline_titles)}...")
+
+            def page_progress(current, total, msg, base=idx, count=len(guideline_titles)):
+                doc_ratio = (base + (current / total if total else 0)) / count
+                progress_bar.progress(min(0.99, doc_ratio))
+                status_text.text(f"[{base + 1}/{count}] {msg}")
+
+            total_chunks += ingest_pipeline.ingest_default_guideline(
+                title,
+                progress_callback=page_progress,
+            )
+
+        progress_bar.progress(1.0)
+        status_text.success(
+            f"Ingested {len(guideline_titles)} guidelines — {total_chunks} total chunks."
+        )
+        refresh_snowflake_data()
+        st.rerun()
+    except Exception as e:
+        status_text.error(f"Batch ingestion failed: {e}")
+        if st.button("Close", key="batch_ingest_dialog_close"):
+            st.rerun()
+
+
+def format_answer_citations(text: str) -> str:
+    """Convert [Source N] / [Source N, p. X] markers into clickable citation pills."""
+    return re.sub(
+        r'\[Source\s*\[?(\d+)\]?(?:,\s*p\.\s*(\d+))?\]',
+        lambda m: (
+            f'<a class="citation-link" href="#source-{m.group(1)}">S{m.group(1)}'
+            + (f', p. {m.group(2)}' if m.group(2) else '')
+            + '</a>'
+        ),
+        text,
+    )
+
 # Title Area for App
 st.markdown('<p class="app-eyebrow">Clinical Decision Support Engine</p>', unsafe_allow_html=True)
 st.markdown('<div class="main-title">Clinical Guideline RAG</div>', unsafe_allow_html=True)
 st.markdown('<div class="subtitle">Search, query, and compare evidence-based clinical guidelines using native Snowflake Vector Search and LLMs</div>', unsafe_allow_html=True)
 
 # ================= MAIN AREA: TABS (rendered before sidebar so UI appears instantly) =================
-tab_qa, tab_compare, tab_docs = st.tabs([
-    "CLINICAL INQUIRY", 
-    "COMPARATIVE ANALYSIS", 
-    "GUIDELINES HUB"
+tab_qa, tab_docs, tab_compare = st.tabs([
+    "CLINICAL INQUIRY",
+    "GUIDELINES HUB",
+    "COMPARATIVE ANALYSIS",
 ])
 
 # ----------------- TAB 1: Q&A ASSISTANT -----------------
 with tab_qa:
-    st.markdown("### Clinical Guideline Q&A")
-    st.write("Submit a query to retrieve evidence-based recommendations complete with page-level citations.")
+    st.markdown("""
+    <div class="tab-section">
+        <div class="section-header">
+            <p class="section-subheader">Evidence retrieval</p>
+            <h3>Clinical Guideline Q&amp;A</h3>
+            <p class="section-lead">Submit a query to retrieve evidence-based recommendations with page-level citations.</p>
+        </div>
+    </div>
+    """, unsafe_allow_html=True)
     
     # Preset queries to guide user
     presets = [
@@ -69,7 +148,7 @@ with tab_qa:
                                   value="",
                                   placeholder="e.g., How often should pain and function be assessed after starting opioids?")
     
-    search_col, doc_filter_col = st.columns([3, 1], vertical_alignment="bottom")
+    search_col, doc_filter_col = st.columns([3, 1], gap="medium", vertical_alignment="bottom")
     cached_doc_names = [d["document_name"] for d in get_indexed_documents_cached()]
     with doc_filter_col:
         active_filter = st.selectbox("Source Guideline Filter", ["All Documents"] + cached_doc_names)
@@ -80,83 +159,298 @@ with tab_qa:
         
     if run_query and query_text.strip():
         if check_requirements():
-            with st.spinner("Retrieving evidence and generating answer..."):
-                try:
-                    result = rag_pipeline.query(
+            try:
+                with st.spinner("Retrieving evidence from guidelines..."):
+                    prepared = rag_pipeline.prepare_query(
                         user_query=query_text,
                         limit=6,
-                        doc_filter=doc_filter
+                        doc_filter=doc_filter,
                     )
-                    
-                    # Display Answer
-                    st.markdown("---")
-                    st.markdown("#### Guidance Summary")
-                    
-                    # Regex replacement to format inline citations [Source X, p. Y] or [Source X] as pills
-                    import re
-                    ans_formatted = result["answer"]
-                    # Replace e.g., [Source X, p. Y] or [Source X] with a styled link
-                    ans_formatted = re.sub(
-                        r'\[Source\s*\[?(\d+)\]?(?:,\s*p\.\s*(\d+))?\]',
-                        lambda m: f'<a class="citation-link" href="#source-{m.group(1)}">S{m.group(1)}' + (f', p. {m.group(2)}' if m.group(2) else '') + '</a>',
-                        ans_formatted
+
+                if prepared["empty_message"]:
+                    st.warning(prepared["empty_message"])
+                else:
+                    st.markdown('<p class="section-subheader" style="margin-top:1.5rem;">Guidance summary</p>', unsafe_allow_html=True)
+
+                    answer_ph = st.empty()
+                    full_answer = ""
+                    for chunk in AppConfig.generate_completion_stream(
+                        prepared["system_prompt"],
+                        prepared["user_prompt"],
+                    ):
+                        full_answer += chunk
+                        answer_ph.markdown(
+                            f'<div class="glow-card answer-streaming">{full_answer}</div>',
+                            unsafe_allow_html=True,
+                        )
+
+                    ans_formatted = format_answer_citations(full_answer)
+                    answer_ph.markdown(
+                        f'<div class="glow-card">{ans_formatted}</div>',
+                        unsafe_allow_html=True,
                     )
-                    
-                    st.markdown('<div class="glow-card">', unsafe_allow_html=True)
-                    st.markdown(ans_formatted, unsafe_allow_html=True)
-                    st.markdown('</div>', unsafe_allow_html=True)
-                    
-                    # Display Confidence Meter
-                    score = result["confidence_score"]
-                    level = result["confidence_level"]
-                    
-                    # Color coding logic using design system variables
-                    color = "hsl(0, 85%, 60%)"  # Red
+
+                    score = prepared["confidence_score"]
+                    level = prepared["confidence_level"]
+
+                    color = "hsl(0, 85%, 60%)"
                     if level == "High":
                         color = "var(--success)"
                     elif level == "Medium":
                         color = "var(--warning)"
-                        
-                    st.markdown("#### Retrieval Confidence & Alignment")
-                    metric_cols = st.columns([1, 4])
+
+                    st.markdown('<div class="confidence-panel">', unsafe_allow_html=True)
+                    st.markdown('<p class="section-subheader">Retrieval confidence</p>', unsafe_allow_html=True)
+                    metric_cols = st.columns([1, 4], gap="large")
                     with metric_cols[0]:
-                        st.markdown(f"<h3 style='color:{color}; margin:0; font-family:var(--font-mono); font-size:1.8rem;'>{score*100:.1f}%</h3>", unsafe_allow_html=True)
-                        st.markdown(f"**Confidence Level:** <span style='color:{color}; font-weight:600;'>{level}</span>", unsafe_allow_html=True)
+                        st.markdown(
+                            f'<p class="confidence-score" style="color:{color};">{score*100:.1f}%</p>',
+                            unsafe_allow_html=True,
+                        )
+                        st.markdown(
+                            f'<p class="confidence-label">Confidence level: <strong style="color:{color};">{level}</strong></p>',
+                            unsafe_allow_html=True,
+                        )
                     with metric_cols[1]:
-                        st.markdown("<div style='margin-top:12px;'></div>", unsafe_allow_html=True)
                         st.progress(score)
-                        st.caption("Confidence percentage is derived from the mean cosine similarity of the top retrieved context chunks.")
-                    
-                    # Display Supporting Passages
-                    st.markdown("---")
-                    with st.expander("Supporting Context & Citation Source Logs", expanded=False):
-                        for s in result["sources"]:
-                            # Extract the index digit from tag, e.g. "Source [1]" -> "1"
+                        st.caption(
+                            "Derived from the mean cosine similarity of the top retrieved context chunks."
+                        )
+                    st.markdown("</div>", unsafe_allow_html=True)
+
+                    st.markdown('<hr class="section-divider">', unsafe_allow_html=True)
+                    with st.expander("Supporting context & citation sources", expanded=False):
+                        for s in prepared["sources"]:
                             idx_match = re.search(r'\d+', s['source_tag'])
                             idx_str = idx_match.group(0) if idx_match else "1"
                             st.markdown(f"""
-                            <div class="glass-card" id="source-{idx_str}">
-                                <strong style="font-family: var(--font-mono); font-size: 0.85rem; color: var(--ds-white);">📄 {s['document_name']} (Page {s['page_number']})</strong> 
-                                <span class="status-badge status-success" style="float:right;">Match score: {s['similarity']*100:.1f}%</span>
-                                <hr style="margin: 12px 0; border: none; border-top: 1px solid var(--border-color);"/>
-                                <p style="font-size:0.95rem; line-height:1.6; color:var(--text-secondary); font-style:italic;">"{s['chunk_text']}"</p>
+                            <div class="glass-card source-card" id="source-{idx_str}">
+                                <div class="source-card-header">
+                                    <p class="source-card-title">{html.escape(s['document_name'])} · Page {s['page_number']}</p>
+                                    <span class="status-badge status-success">Match {s['similarity']*100:.1f}%</span>
+                                </div>
+                                <p class="source-card-quote">"{html.escape(s['chunk_text'])}"</p>
                             </div>
                             """, unsafe_allow_html=True)
-                            
-                except Exception as e:
-                    st.error(f"Error executing RAG Pipeline: {e}")
+
+            except Exception as e:
+                st.error(f"Error executing RAG Pipeline: {e}")
  
-# ----------------- TAB 2: COMPARATIVE ANALYSIS -----------------
+# ----------------- TAB 2: GUIDELINES HUB -----------------
+with tab_docs:
+    st.markdown("""
+    <div class="tab-section">
+        <div class="section-header">
+            <p class="section-subheader">Repository</p>
+            <h3>Guidelines Hub</h3>
+            <p class="section-lead">Browse, ingest, and manage CDC MMWR clinical guidelines in your Snowflake vector index.</p>
+        </div>
+    </div>
+    """, unsafe_allow_html=True)
+
+    upload_custom = st.toggle("Upload custom guidelines", value=False)
+
+    if not upload_custom:
+        st.markdown(
+            f'<p class="section-lead" style="margin-bottom:1rem;">'
+            f'<strong>{len(GUIDELINES_CATALOG)}</strong> verified CDC guidelines available for ingestion.</p>',
+            unsafe_allow_html=True,
+        )
+
+        if "guidelines_page" not in st.session_state:
+            st.session_state.guidelines_page = 0
+
+        total_guidelines = len(GUIDELINES_CATALOG)
+        total_pages = max(1, (total_guidelines + GUIDELINES_PAGE_SIZE - 1) // GUIDELINES_PAGE_SIZE)
+        current_page = max(0, min(st.session_state.guidelines_page, total_pages - 1))
+        st.session_state.guidelines_page = current_page
+
+        page_start = current_page * GUIDELINES_PAGE_SIZE
+        page_items = GUIDELINES_CATALOG[page_start:page_start + GUIDELINES_PAGE_SIZE]
+        indexed_names = {d["document_name"] for d in get_indexed_documents_cached()}
+
+        nav_prev, nav_info, nav_next = st.columns([1, 2, 1], gap="medium", vertical_alignment="center")
+        with nav_prev:
+            if st.button("← Previous", disabled=current_page == 0, key="guidelines_prev"):
+                st.session_state.guidelines_page = current_page - 1
+                st.rerun()
+        with nav_info:
+            st.markdown(
+                f"""
+                <div class="guidelines-toolbar-meta">
+                    Page <strong>{current_page + 1}</strong> of <strong>{total_pages}</strong>
+                    &nbsp;·&nbsp; Showing <strong>{len(page_items)}</strong> of <strong>{total_guidelines}</strong>
+                </div>
+                """,
+                unsafe_allow_html=True,
+            )
+        with nav_next:
+            if st.button("Next →", disabled=current_page >= total_pages - 1, key="guidelines_next"):
+                st.session_state.guidelines_page = current_page + 1
+                st.rerun()
+
+        st.markdown('<div class="guidelines-grid-row">', unsafe_allow_html=True)
+        for row_start in range(0, len(page_items), 2):
+            card_cols = st.columns(2, gap="medium")
+            for col_idx, guideline in enumerate(page_items[row_start:row_start + 2]):
+                is_indexed = guideline["title"] in indexed_names
+                status_badge = (
+                    "<span class='status-badge status-success'>Indexed</span>"
+                    if is_indexed
+                    else "<span class='status-badge status-warning'>Not indexed</span>"
+                )
+                safe_title = html.escape(guideline["title"])
+                safe_desc = html.escape(guideline["description"])
+                safe_url = html.escape(guideline["url"])
+                with card_cols[col_idx]:
+                    st.markdown(
+                        f"""
+                        <div class="guideline-entry-shell">
+                            <div class="guideline-card-header">{status_badge}</div>
+                            <h5 class="guideline-title">{safe_title}</h5>
+                            <p class="guideline-desc">{safe_desc}</p>
+                        </div>
+                        """,
+                        unsafe_allow_html=True,
+                    )
+                    action_pdf, action_ingest = st.columns(2, gap="small", vertical_alignment="center")
+                    with action_pdf:
+                        st.markdown(
+                            f"""
+                            <a class="guideline-action-btn guideline-action-pdf"
+                               href="{safe_url}" target="_blank" rel="noopener noreferrer">
+                                <svg class="guideline-action-icon" width="13" height="13" viewBox="0 0 24 24"
+                                     fill="none" stroke="currentColor" stroke-width="2"
+                                     stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
+                                    <path d="M14 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V8z"/>
+                                    <polyline points="14 2 14 8 20 8"/>
+                                    <line x1="16" y1="13" x2="8" y2="13"/>
+                                    <line x1="16" y1="17" x2="8" y2="17"/>
+                                </svg>
+                                <span>View PDF</span>
+                            </a>
+                            """,
+                            unsafe_allow_html=True,
+                        )
+                    with action_ingest:
+                        if st.button(
+                            "Ingest",
+                            key=f"ingest_{guideline['code']}",
+                            type="secondary",
+                            width="stretch",
+                        ):
+                            if check_requirements():
+                                ingest_guideline_dialog(guideline["title"])
+        st.markdown("</div>", unsafe_allow_html=True)
+
+        st.markdown('<div class="batch-ingest-row">', unsafe_allow_html=True)
+        _batch_left, batch_btn_col, _batch_right = st.columns([1, 2, 1])
+        with batch_btn_col:
+            if st.button(
+                "Ingest all on this page",
+                type="secondary",
+                key="batch_ingest_page",
+            ):
+                if check_requirements():
+                    ingest_page_dialog([g["title"] for g in page_items])
+        st.markdown("</div>", unsafe_allow_html=True)
+
+    else:
+        st.markdown("""
+        <div class="section-header">
+            <p class="section-subheader">Custom upload</p>
+            <h4>Ingest policy document</h4>
+            <p class="section-lead">Upload institutional policies or local clinical guidelines in PDF format.</p>
+        </div>
+        """, unsafe_allow_html=True)
+
+        uploaded_file = st.file_uploader("Select PDF Document", type="pdf")
+        if uploaded_file is not None:
+            upload_btn = st.button("Ingest Custom Guideline")
+            if upload_btn:
+                if check_requirements():
+                    prog_bar = st.progress(0.0)
+                    status_lbl = st.empty()
+
+                    try:
+                        def upload_progress(current, total, msg):
+                            prog_bar.progress(current / total)
+                            status_lbl.text(msg)
+
+                        file_bytes = uploaded_file.read()
+                        chunk_count = ingest_pipeline.ingest_uploaded_pdf(
+                            file_bytes=file_bytes,
+                            filename=uploaded_file.name,
+                            progress_callback=upload_progress,
+                        )
+                        prog_bar.progress(1.0)
+                        status_lbl.success(
+                            f"Successfully ingested custom guideline '{uploaded_file.name}'! "
+                            f"Generated {chunk_count} vector chunks."
+                        )
+                        refresh_snowflake_data()
+                        st.rerun()
+                    except Exception as e:
+                        status_lbl.error(f"Error during upload: {e}")
+
+    st.markdown('<hr class="section-divider">', unsafe_allow_html=True)
+
+    st.markdown("""
+    <div class="section-header">
+        <p class="section-subheader">Index management</p>
+        <h4>Guidelines index status</h4>
+        <p class="section-lead">View indexed documents and remove entries from the vector schema.</p>
+    </div>
+    """, unsafe_allow_html=True)
+
+    indexed_docs = get_indexed_documents_cached()
+    db_status, _, db_ok = get_snowflake_status_cached()
+    if db_ok:
+        try:
+            if not indexed_docs:
+                st.info("No documents are currently indexed in the Snowflake vector database.")
+            else:
+                df_docs = pd.DataFrame(indexed_docs)
+                df_docs.columns = ["Document Name", "Chunk Count", "First Page", "Last Page"]
+
+                st.dataframe(df_docs, width="stretch")
+
+                doc_to_delete = st.selectbox("Select Document to Delete", [d["document_name"] for d in indexed_docs])
+                delete_btn = st.button("Drop Document Index", type="secondary")
+
+                if delete_btn:
+                    if check_requirements():
+                        with st.spinner(f"Removing {doc_to_delete} from Snowflake..."):
+                            store.delete_document(doc_to_delete)
+                            refresh_snowflake_data()
+                            st.success(f"Removed '{doc_to_delete}' successfully!")
+                            st.rerun()
+        except Exception as e:
+            st.error(f"Error loading index: {e}")
+    else:
+        if db_status == "connecting":
+            st.info("Connecting to Snowflake...")
+        else:
+            st.info("Snowflake is unconfigured or offline. Connect to view indexed files.")
+
+# ----------------- TAB 3: COMPARATIVE ANALYSIS -----------------
 with tab_compare:
-    st.markdown("### Cross-Guideline Comparison")
-    st.write("Evaluate multiple clinical guidelines side-by-side to analyze alignments, discrepancies, and consensus recommendations.")
+    st.markdown("""
+    <div class="tab-section">
+        <div class="section-header">
+            <p class="section-subheader">Side-by-side review</p>
+            <h3>Cross-guideline comparison</h3>
+            <p class="section-lead">Analyze alignments, discrepancies, and consensus across two indexed guidelines.</p>
+        </div>
+    </div>
+    """, unsafe_allow_html=True)
     
     available_docs = [d["document_name"] for d in get_indexed_documents_cached()]
         
     if len(available_docs) < 2:
         st.warning("⚠️ Guideline comparison requires at least 2 documents indexed in the Snowflake database. Currently indexed: " + str(available_docs))
     else:
-        col_a, col_b = st.columns(2)
+        col_a, col_b = st.columns(2, gap="medium")
         with col_a:
             doc_a = st.selectbox("Guideline A (Baseline)", available_docs, index=0)
         with col_b:
@@ -181,11 +475,8 @@ with tab_compare:
                                 doc_b=doc_b
                             )
                             
-                            st.markdown("---")
-                            st.markdown("#### 📈 Comparative Synthesis")
+                            st.markdown('<p class="section-subheader" style="margin-top:1.5rem;">Comparative synthesis</p>', unsafe_allow_html=True)
                             
-                            # Run citation formatting on comparison text in case any citations exist
-                            import re
                             comp_formatted = result["comparison_text"]
                             comp_formatted = re.sub(
                                 r'\[Source\s*\[?(\d+)\]?(?:,\s*p\.\s*(\d+))?\]',
@@ -197,175 +488,33 @@ with tab_compare:
                             st.markdown(comp_formatted, unsafe_allow_html=True)
                             st.markdown('</div>', unsafe_allow_html=True)
                             
-                            # Display references inside expandable tabs
-                            col_ref_a, col_ref_b = st.columns(2)
+                            col_ref_a, col_ref_b = st.columns(2, gap="medium")
                             with col_ref_a:
-                                with st.expander(f"Supporting Context: {doc_a}"):
+                                with st.expander(f"Supporting context · {doc_a[:48]}{'…' if len(doc_a) > 48 else ''}"):
                                     for c in result["sources_a"]:
                                         st.markdown(f"""
-                                        <div class="glass-card" style="padding: 16px !important; margin-bottom: 12px !important;">
-                                            <strong style="font-family: var(--font-mono); font-size: 0.8rem; color: var(--ds-white);">Page {c['page_number']}</strong>
-                                            <span class="status-badge status-success" style="float:right;">Match: {c['similarity']*100:.1f}%</span>
-                                            <hr style="margin: 8px 0; border: none; border-top: 1px solid var(--border-color);"/>
-                                            <p style="font-size:0.9rem; line-height:1.5; color:var(--text-secondary); margin: 0; font-style:italic;">"{c['chunk_text']}"</p>
+                                        <div class="glass-card source-card">
+                                            <div class="source-card-header">
+                                                <p class="source-card-title">Page {c['page_number']}</p>
+                                                <span class="status-badge status-success">Match {c['similarity']*100:.1f}%</span>
+                                            </div>
+                                            <p class="source-card-quote">"{html.escape(c['chunk_text'])}"</p>
                                         </div>
                                         """, unsafe_allow_html=True)
                             with col_ref_b:
-                                with st.expander(f"Supporting Context: {doc_b}"):
+                                with st.expander(f"Supporting context · {doc_b[:48]}{'…' if len(doc_b) > 48 else ''}"):
                                     for c in result["sources_b"]:
                                         st.markdown(f"""
-                                        <div class="glass-card" style="padding: 16px !important; margin-bottom: 12px !important;">
-                                            <strong style="font-family: var(--font-mono); font-size: 0.8rem; color: var(--ds-white);">Page {c['page_number']}</strong>
-                                            <span class="status-badge status-success" style="float:right;">Match: {c['similarity']*100:.1f}%</span>
-                                            <hr style="margin: 8px 0; border: none; border-top: 1px solid var(--border-color);"/>
-                                            <p style="font-size:0.9rem; line-height:1.5; color:var(--text-secondary); margin: 0; font-style:italic;">"{c['chunk_text']}"</p>
+                                        <div class="glass-card source-card">
+                                            <div class="source-card-header">
+                                                <p class="source-card-title">Page {c['page_number']}</p>
+                                                <span class="status-badge status-success">Match {c['similarity']*100:.1f}%</span>
+                                            </div>
+                                            <p class="source-card-quote">"{html.escape(c['chunk_text'])}"</p>
                                         </div>
                                         """, unsafe_allow_html=True)
                         except Exception as e:
                             st.error(f"Error performing comparison: {e}")
-
-# ----------------- TAB 3: GUIDELINES HUB -----------------
-with tab_docs:
-    st.markdown("### Guidelines Repository & Ingestion")
-    
-    upload_custom = st.toggle("Upload Custom Guidelines", value=False)
-    
-    if not upload_custom:
-        # Section 1: Ingest Default Public Guidelines (Example Documents)
-        st.markdown("#### Ingest Standard Reference Guidelines")
-        st.write("Fetch, segment, and vector-embed standard reference guidelines directly into the Snowflake database schema.")
-        
-        col_dl_1, col_dl_2 = st.columns(2)
-        with col_dl_1:
-            st.markdown(f"""
-            <div class="glass-card">
-                <h5>CDC Opioid Prescribing Practice Guideline (2022)</h5>
-                <p style="font-size:0.85rem; color: var(--text-secondary); line-height: 1.5; margin-bottom: 12px;">Replaces the 2016 guideline. Outlines 12 practice recommendations for chronic and acute pain management.</p>
-                <a href="{DEFAULT_GUIDELINES["CDC Opioid Prescribing Guideline (2022)"]["url"]}" target="_blank" style="font-size:0.8rem; color: var(--primary-accent); text-decoration:none; font-family: var(--font-mono); font-weight: 600;">🔗 ORIGINAL PDF LINK</a>
-            </div>
-            """, unsafe_allow_html=True)
-            
-        with col_dl_2:
-            st.markdown(f"""
-            <div class="glass-card">
-                <h5>CDC Latent Tuberculosis Treatment Guideline (2020)</h5>
-                <p style="font-size:0.85rem; color: var(--text-secondary); line-height: 1.5; margin-bottom: 12px;">Outlines guidelines for treatment of latent tuberculosis infection in the US, detailing preferred short-course regimens.</p>
-                <a href="{DEFAULT_GUIDELINES["CDC Latent Tuberculosis Treatment Guideline (2020)"]["url"]}" target="_blank" style="font-size:0.8rem; color: var(--primary-accent); text-decoration:none; font-family: var(--font-mono); font-weight: 600;">🔗 ORIGINAL PDF LINK</a>
-            </div>
-            """, unsafe_allow_html=True)
-            
-        ingest_defaults = st.button("Ingest Reference Guidelines", type="primary", width="stretch")
-        
-        # Progress UI for default ingestion
-        if ingest_defaults:
-            if check_requirements():
-                progress_bar = st.progress(0.0)
-                status_text = st.empty()
-                
-                try:
-                    # 1. Download
-                    status_text.text("Downloading default guidelines PDFs...")
-                    progress_bar.progress(0.1)
-                    
-                    cdc_path = ingest_pipeline.download_default_pdf("CDC Opioid Prescribing Guideline (2022)")
-                    tb_path = ingest_pipeline.download_default_pdf("CDC Latent Tuberculosis Treatment Guideline (2020)")
-                    
-                    progress_bar.progress(0.2)
-                    
-                    # 2. Ingest CDC
-                    status_text.text("Ingesting CDC Opioids Guideline (estimating ~60-80 pages)...")
-                    def cdc_progress(current, total, msg):
-                        ratio = 0.2 + (current / total) * 0.4
-                        progress_bar.progress(min(0.6, ratio))
-                        status_text.text(f"CDC Opioids: {msg}")
-                        
-                    cdc_chunks = ingest_pipeline.process_and_index_pdf(cdc_path, "CDC Opioid Prescribing Guideline (2022)", cdc_progress)
-                    
-                    # 3. Ingest TB
-                    status_text.text("Ingesting CDC Tuberculosis Guideline (estimating ~20-30 pages)...")
-                    def tb_progress(current, total, msg):
-                        ratio = 0.6 + (current / total) * 0.35
-                        progress_bar.progress(min(0.95, ratio))
-                        status_text.text(f"CDC TB: {msg}")
-                        
-                    tb_chunks = ingest_pipeline.process_and_index_pdf(tb_path, "CDC Latent Tuberculosis Treatment Guideline (2020)", tb_progress)
-                    
-                    progress_bar.progress(1.0)
-                    status_text.success(f"Successfully loaded Guidelines into Snowflake! Indexed {cdc_chunks} CDC Opioid chunks and {tb_chunks} CDC TB chunks.")
-                    refresh_snowflake_data()
-                    st.rerun()
-                    
-                except Exception as e:
-                    status_text.error(f"Ingestion failed: {e}")
-                    
-    else:
-        # Section 2: Upload Custom Guidelines
-        st.markdown("#### Ingest Custom Policy Document")
-        st.write("Upload institutional policies or local clinical guidelines (PDF format) to segment, vector-embed, and index.")
-        
-        uploaded_file = st.file_uploader("Select PDF Document", type="pdf")
-        if uploaded_file is not None:
-            upload_btn = st.button("Ingest Custom Guideline")
-            if upload_btn:
-                if check_requirements():
-                    prog_bar = st.progress(0.0)
-                    status_lbl = st.empty()
-                    
-                    try:
-                        def upload_progress(current, total, msg):
-                            prog_bar.progress(current / total)
-                            status_lbl.text(msg)
-                            
-                        file_bytes = uploaded_file.read()
-                        chunk_count = ingest_pipeline.ingest_uploaded_pdf(
-                            file_bytes=file_bytes,
-                            filename=uploaded_file.name,
-                            progress_callback=upload_progress
-                        )
-                        prog_bar.progress(1.0)
-                        status_lbl.success(f"Successfully ingested custom guideline '{uploaded_file.name}'! Generated {chunk_count} vector chunks.")
-                        refresh_snowflake_data()
-                        st.rerun()
-                    except Exception as e:
-                        status_lbl.error(f"Error during upload: {e}")
-                        
-    st.markdown("---")
-    
-    # Section 3: Manage Index
-    st.markdown("#### Guidelines Index Status")
-    st.write("Manage active guideline documents inside the vector schema. Rebuild or drop indices as required.")
-    
-    indexed_docs = get_indexed_documents_cached()
-    db_status, _, db_ok = get_snowflake_status_cached()
-    if db_ok:
-        try:
-            if not indexed_docs:
-                st.info("No documents are currently indexed in the Snowflake vector database.")
-            else:
-                # Convert list of dicts to DataFrame for neat visualization
-                df_docs = pd.DataFrame(indexed_docs)
-                df_docs.columns = ["Document Name", "Chunk Count", "First Page", "Last Page"]
-                
-                st.dataframe(df_docs, width="stretch")
-                
-                # Delete control
-                doc_to_delete = st.selectbox("Select Document to Delete", [d["document_name"] for d in indexed_docs])
-                delete_btn = st.button("Drop Document Index", type="secondary")
-                
-                if delete_btn:
-                    if check_requirements():
-                        with st.spinner(f"Removing {doc_to_delete} from Snowflake..."):
-                            store.delete_document(doc_to_delete)
-                            refresh_snowflake_data()
-                            st.success(f"Removed '{doc_to_delete}' successfully!")
-                            st.rerun()
-        except Exception as e:
-            st.error(f"Error loading index: {e}")
-    else:
-        if db_status == "connecting":
-            st.info("Connecting to Snowflake...")
-        else:
-            st.info("Snowflake is unconfigured or offline. Connect to view indexed files.")
 
 # ================= SIDEBAR (after main content — does not block tab UI from streaming in) =================
 with st.sidebar:

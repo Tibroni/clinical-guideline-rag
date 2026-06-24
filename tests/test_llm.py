@@ -65,8 +65,29 @@ def test_openai_completion(mock_openai_class, monkeypatch):
             {"role": "system", "content": "system prompt"},
             {"role": "user", "content": "user query"}
         ],
-        temperature=0.2
+        temperature=0.2,
+        stream=True,
     )
+
+@patch("openai.OpenAI")
+def test_openai_completion_stream(mock_openai_class, monkeypatch):
+    mock_client = MagicMock()
+    mock_openai_class.return_value = mock_client
+
+    chunk_one = MagicMock()
+    chunk_one.choices = [MagicMock(delta=MagicMock(content="Hello "))]
+    chunk_two = MagicMock()
+    chunk_two.choices = [MagicMock(delta=MagicMock(content="world."))]
+    chunk_empty = MagicMock()
+    chunk_empty.choices = [MagicMock(delta=MagicMock(content=None))]
+    mock_client.chat.completions.create.return_value = [chunk_one, chunk_two, chunk_empty]
+
+    monkeypatch.setenv("LLM_PROVIDER", "openai")
+    monkeypatch.setenv("OPENAI_API_KEY", "mock-key")
+
+    streamed = list(AppConfig.generate_completion_stream("system prompt", "user query"))
+
+    assert streamed == ["Hello ", "world."]
 
 @patch("google.genai.Client")
 def test_gemini_embedding(mock_gemini_client_class, monkeypatch):

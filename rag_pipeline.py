@@ -1,62 +1,7 @@
 from config import AppConfig
 from vector_store import SnowflakeVectorStore
 
-class RAGPipeline:
-    def __init__(self):
-        self.vector_store = SnowflakeVectorStore()
-
-    def query(self, user_query: str, limit: int = 6, doc_filter: str = None) -> dict:
-        """
-        Executes the main RAG flow:
-        1. Embeds the user query.
-        2. Retrieves the top relevant chunks from Snowflake.
-        3. Constructs a context-aware system prompt.
-        4. Invokes the LLM to generate the answer with citations.
-        5. Calculates confidence scores.
-        """
-        # Step 1: Embed Query
-        query_vector = AppConfig.get_embedding(user_query)
-        
-        # Step 2: Retrieve Relevant Chunks
-        retrieved_chunks = self.vector_store.similarity_search(
-            query_vector=query_vector,
-            limit=limit,
-            doc_filter=doc_filter
-        )
-        
-        if not retrieved_chunks:
-            return {
-                "answer": "No relevant clinical guideline documents have been ingested or matched your query. Please index documents first.",
-                "sources": [],
-                "confidence_score": 0.0,
-                "confidence_level": "None"
-            }
-            
-        # Step 3: Format Context & Track Citations
-        context_str = ""
-        sources_list = []
-        for idx, chunk in enumerate(retrieved_chunks):
-            doc_name = chunk["document_name"]
-            page_num = chunk["page_number"]
-            source_tag = f"Source [{idx + 1}]"
-            
-            # Format text block for the LLM
-            context_str += f"--- {source_tag} ---\n"
-            context_str += f"Document: {doc_name}\n"
-            context_str += f"Page: {page_num}\n"
-            context_str += f"Text:\n{chunk['chunk_text']}\n\n"
-            
-            # Store metadata for citation panel
-            sources_list.append({
-                "source_tag": source_tag,
-                "document_name": doc_name,
-                "page_number": page_num,
-                "chunk_text": chunk["chunk_text"],
-                "similarity": chunk["similarity"]
-            })
-            
-        # Step 4: System Prompt and LLM Completion
-        system_prompt = """You are an advanced Clinical Guideline Assistant. Your purpose is to provide clinicians with accurate, evidence-based answers to medical policy and clinical guidelines questions.
+QA_SYSTEM_PROMPT = """You are an advanced Clinical Guideline Assistant. Your purpose is to provide clinicians with accurate, evidence-based answers to medical policy and clinical guidelines questions.
 
 Follow these strict rules:
 1. Base your answer **only** on the clinical guideline passages provided in the context below. Do not assume, extrapolate, or use outside clinical knowledge.
@@ -66,7 +11,69 @@ Follow these strict rules:
 5. Refer to specific pages if provided, e.g., "for patients with cardiovascular disease, initiate at ≥ 130 mmHg [Source 2, p. 12]."
 6. Include a brief concluding summary table of the key recommendations if applicable.
 """
-        
+
+
+class RAGPipeline:
+    def __init__(self):
+        self.vector_store = SnowflakeVectorStore()
+
+    @staticmethod
+    def _confidence_from_chunks(retrieved_chunks: list) -> tuple[float, str]:
+        top_similarities = [c["similarity"] for c in retrieved_chunks[:3]]
+        avg_similarity = sum(top_similarities) / len(top_similarities) if top_similarities else 0.0
+        if avg_similarity >= 0.80:
+            confidence_level = "High"
+        elif avg_similarity >= 0.60:
+            confidence_level = "Medium"
+        else:
+            confidence_level = "Low"
+        return avg_similarity, confidence_level
+
+    def prepare_query(self, user_query: str, limit: int = 6, doc_filter: str = None) -> dict:
+        """
+        Runs retrieval and prompt construction for Q&A without invoking the LLM.
+        Returns prompts, sources, and confidence metadata for streaming or batch completion.
+        """
+        query_vector = AppConfig.get_embedding(user_query)
+        retrieved_chunks = self.vector_store.similarity_search(
+            query_vector=query_vector,
+            limit=limit,
+            doc_filter=doc_filter,
+        )
+
+        if not retrieved_chunks:
+            return {
+                "system_prompt": None,
+                "user_prompt": None,
+                "sources": [],
+                "confidence_score": 0.0,
+                "confidence_level": "None",
+                "empty_message": (
+                    "No relevant clinical guideline documents have been ingested or "
+                    "matched your query. Please index documents first."
+                ),
+            }
+
+        context_str = ""
+        sources_list = []
+        for idx, chunk in enumerate(retrieved_chunks):
+            doc_name = chunk["document_name"]
+            page_num = chunk["page_number"]
+            source_tag = f"Source [{idx + 1}]"
+
+            context_str += f"--- {source_tag} ---\n"
+            context_str += f"Document: {doc_name}\n"
+            context_str += f"Page: {page_num}\n"
+            context_str += f"Text:\n{chunk['chunk_text']}\n\n"
+
+            sources_list.append({
+                "source_tag": source_tag,
+                "document_name": doc_name,
+                "page_number": page_num,
+                "chunk_text": chunk["chunk_text"],
+                "similarity": chunk["similarity"],
+            })
+
         user_prompt = f"""Clinical Question: {user_query}
 
 Context from Clinical Guidelines:
@@ -74,30 +81,39 @@ Context from Clinical Guidelines:
 
 Please generate a clinical response following the rules above.
 """
-        
+        confidence_score, confidence_level = self._confidence_from_chunks(retrieved_chunks)
+
+        return {
+            "system_prompt": QA_SYSTEM_PROMPT,
+            "user_prompt": user_prompt,
+            "sources": sources_list,
+            "confidence_score": confidence_score,
+            "confidence_level": confidence_level,
+            "empty_message": None,
+        }
+
+    def query(self, user_query: str, limit: int = 6, doc_filter: str = None) -> dict:
+        """Executes the full RAG Q&A flow (retrieval + non-streaming completion)."""
+        prepared = self.prepare_query(user_query, limit=limit, doc_filter=doc_filter)
+
+        if prepared["empty_message"]:
+            return {
+                "answer": prepared["empty_message"],
+                "sources": [],
+                "confidence_score": 0.0,
+                "confidence_level": "None",
+            }
+
         answer = AppConfig.generate_completion(
-            system_prompt=system_prompt,
-            user_prompt=user_prompt
+            system_prompt=prepared["system_prompt"],
+            user_prompt=prepared["user_prompt"],
         )
-        
-        # Step 5: Calculate Confidence Score
-        # We calculate the average similarity of the top 3 matches (or all if fewer than 3)
-        top_similarities = [c["similarity"] for c in retrieved_chunks[:3]]
-        avg_similarity = sum(top_similarities) / len(top_similarities) if top_similarities else 0.0
-        
-        # Determine confidence level
-        if avg_similarity >= 0.80:
-            confidence_level = "High"
-        elif avg_similarity >= 0.60:
-            confidence_level = "Medium"
-        else:
-            confidence_level = "Low"
-            
+
         return {
             "answer": answer,
-            "sources": sources_list,
-            "confidence_score": avg_similarity,
-            "confidence_level": confidence_level
+            "sources": prepared["sources"],
+            "confidence_score": prepared["confidence_score"],
+            "confidence_level": prepared["confidence_level"],
         }
 
     def compare_guidelines(self, clinical_topic: str, doc_a: str, doc_b: str) -> dict:
