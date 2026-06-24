@@ -72,15 +72,30 @@ st.markdown("""
     .stApp:has(.landing-page-root) .landing-detail-col:hover .landing-detail-heading {
         color: #F44174 !important;
     }
+    .stApp:has(.landing-page-root) .landing-detail-card .tech-table {
+        width: calc(100% + 48px) !important;
+        margin-left: -24px !important;
+        margin-right: -24px !important;
+    }
+    .stApp:has(.landing-page-root) .landing-detail-card .tech-table td {
+        padding: 12px 24px !important;
+        transition: background-color 0.22s ease, color 0.22s ease, box-shadow 0.22s ease !important;
+    }
     .stApp:has(.landing-page-root) .landing-detail-card .tech-table tr {
-        transition: background-color 0.2s ease;
+        transition: background-color 0.22s ease;
     }
     .stApp:has(.landing-page-root) .landing-detail-card .tech-table tr:hover td {
-        background-color: rgba(244, 65, 116, 0.05) !important;
+        background-color: rgba(244, 65, 116, 0.14) !important;
+    }
+    .stApp:has(.landing-page-root) .landing-detail-card .tech-table tr:hover td:first-child {
+        box-shadow: inset 4px 0 0 #F44174 !important;
     }
     .stApp:has(.landing-page-root) .landing-detail-card .tech-table tr:hover td.tech-key,
     .stApp:has(.landing-page-root) .landing-detail-card .tech-table tr:hover .workflow-key-label {
         color: #FF5A89 !important;
+    }
+    .stApp:has(.landing-page-root) .landing-detail-card .tech-table tr:hover td:not(.tech-key):not(.workflow-key) {
+        color: #EDEDED !important;
     }
     .stApp:has(.landing-page-root) .tech-table.workflow-table code {
         transition: background-color 0.2s ease, border-color 0.2s ease;
