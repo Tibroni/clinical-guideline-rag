@@ -14,6 +14,19 @@ HIDE_LANDING_SIDEBAR_CSS = """
 </style>
 """
 
+HIDE_STREAMLIT_TOOLBAR_CSS = """
+<style>
+    [data-testid="stToolbar"] { display: none !important; }
+    [data-testid="stDecoration"] { display: none !important; }
+    header[data-testid="stHeader"] { visibility: hidden !important; height: 0 !important; }
+    .stApp > header + div[data-testid="stAppViewContainer"] {
+        margin-top: 0 !important;
+        padding-top: 0 !important;
+    }
+    .block-container { padding-top: 2rem !important; }
+</style>
+"""
+
 def inject_styles(*, hide_sidebar: bool = False):
     st.markdown("""
 <!-- Film Grain Overlay -->
@@ -545,5 +558,6 @@ def inject_styles(*, hide_sidebar: bool = False):
 </style>
 """, unsafe_allow_html=True)
     st.markdown(HIDE_PAGES_NAV_CSS, unsafe_allow_html=True)
+    st.markdown(HIDE_STREAMLIT_TOOLBAR_CSS, unsafe_allow_html=True)
     if hide_sidebar:
         st.markdown(HIDE_LANDING_SIDEBAR_CSS, unsafe_allow_html=True)

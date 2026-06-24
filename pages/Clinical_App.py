@@ -21,6 +21,11 @@ st.set_page_config(
     page_icon="⚕️",
     layout="wide",
     initial_sidebar_state="expanded",
+    menu_items={
+        "Get Help": None,
+        "Report a bug": None,
+        "About": None,
+    },
 )
 
 inject_styles()
